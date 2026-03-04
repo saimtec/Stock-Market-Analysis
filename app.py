@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import yfinance as yf
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -17,32 +18,131 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
     <style>
-    .main { padding: 2rem; }
+    .main { padding: 2rem; background: linear-gradient(180deg, #0b1220 0%, #0f172a 45%, #111827 100%); color: #e5e7eb; }
+    .stApp { background: linear-gradient(180deg, #0b1220 0%, #0f172a 45%, #111827 100%); }
+    [data-testid="stHeader"] { background: transparent; }
+    [data-testid="stSidebar"] { background-color: #111827; }
+    [data-testid="stSidebar"] * { color: #e5e7eb; }
+    [data-testid="stMetric"] { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 10px; }
+    .stAlert { border-radius: 10px; }
     ::-webkit-scrollbar { width: 10px; }
-    ::-webkit-scrollbar-track { background: #f1f1f1; }
-    ::-webkit-scrollbar-thumb { background: #888; border-radius: 5px; }
-    ::-webkit-scrollbar-thumb:hover { background: #555; }
-    h1 { color: #1f77b4; text-align: center; margin-bottom: 2rem; }
-    h2 { color: #2ca02c; margin-top: 1.5rem; border-bottom: 2px solid #2ca02c; padding-bottom: 0.5rem; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    h1 { color: #f8fafc; text-align: center; margin-bottom: 1rem; }
+    h2 { color: #bfdbfe; margin-top: 1.5rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+    .hero-card {
+        background: linear-gradient(135deg, rgba(30,58,138,0.35), rgba(17,24,39,0.95));
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 20px;
+    }
+    .hero-title { color: #f8fafc; font-size: 1.2rem; font-weight: 700; margin-bottom: 8px; }
+    .hero-subtitle { color: #cbd5e1; margin: 0 0 12px 0; }
+    .hero-grid { display: grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap: 8px 14px; }
+    .hero-item { color: #e2e8f0; font-weight: 500; background: rgba(15,23,42,0.7); border: 1px solid #334155; border-radius: 10px; padding: 8px 10px; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("Stock Market Analysis Dashboard")
 st.markdown("""
-    <div style="background-color:#f0f2f6; padding:15px; border-radius:10px; margin-bottom:20px;">
-    <h3>Real-time Stock Analysis with Technical Indicators</h3>
-    <ul style="margin:0; padding-left:20px;">
-        <li>Real-time data from Yahoo Finance</li>
-        <li>Technical indicators (SMA, RSI, MACD)</li>
-        <li>Volume analysis and portfolio comparison</li>
-        <li>30-day price forecasting</li>
-    </ul>
+    <div class="hero-card">
+        <div class="hero-title">Real-time Stock Analysis with Technical Indicators</div>
+        <p class="hero-subtitle">Analyze live market movement, trend momentum, and short-term direction from one dashboard.</p>
+        <div class="hero-grid">
+            <div class="hero-item">Live market data from Yahoo Finance with automatic fallback</div>
+            <div class="hero-item">Technical indicators: SMA, RSI, and MACD</div>
+            <div class="hero-item">Volume analysis and multi-stock performance comparison</div>
+            <div class="hero-item">30-day trend projection for educational insights</div>
+        </div>
     </div>
 """, unsafe_allow_html=True)
 
 # Initialize session state
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = None
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = None
+
+
+def fetch_stock_data(symbol: str, period: str):
+    required_cols = {'Open', 'High', 'Low', 'Close', 'Volume'}
+
+    def map_period_to_days(selected_period: str):
+        period_days = {
+            '1mo': 30,
+            '3mo': 90,
+            '6mo': 180,
+            '1y': 365,
+            '2y': 730,
+            '5y': 1825
+        }
+        return period_days.get(selected_period, 180)
+
+    def fetch_from_stooq(ticker: str, selected_period: str):
+        stooq_symbol = ticker.lower()
+        if '.' not in stooq_symbol:
+            stooq_symbol = f"{stooq_symbol}.us"
+
+        url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+        data = pd.read_csv(url)
+        if data.empty or 'Date' not in data.columns:
+            return None
+
+        data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+        data = data.dropna(subset=['Date'])
+        data = data.set_index('Date').sort_index()
+
+        cutoff_days = map_period_to_days(selected_period)
+        cutoff_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=cutoff_days)
+        data = data.loc[data.index >= cutoff_date]
+
+        if data.empty:
+            return None
+        return data
+
+    def normalize(df: pd.DataFrame):
+        if df is None or df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if not required_cols.issubset(set(df.columns)):
+            return None
+        cleaned = df.dropna(subset=['Close']).copy()
+        return cleaned if not cleaned.empty else None
+
+    def fetch_yahoo_with_retry(ticker: str, selected_period: str):
+        for attempt in range(3):
+            try:
+                primary = normalize(yf.download(ticker, period=selected_period, progress=False, threads=False, timeout=20))
+                if primary is not None:
+                    return primary, "Yahoo Finance (download)"
+            except Exception:
+                pass
+
+            try:
+                fallback = normalize(yf.Ticker(ticker).history(period=selected_period, auto_adjust=False))
+                if fallback is not None:
+                    return fallback, "Yahoo Finance (history)"
+            except Exception:
+                pass
+
+            time.sleep(1.0 + attempt)
+        return None, None
+
+    yahoo_data, yahoo_source = fetch_yahoo_with_retry(symbol, period)
+    if yahoo_data is not None:
+        return yahoo_data, yahoo_source
+
+    try:
+        stooq_fallback = normalize(fetch_from_stooq(symbol, period))
+        if stooq_fallback is not None:
+            return stooq_fallback, "Stooq CSV fallback"
+    except Exception:
+        pass
+
+    return None, None
 
 # STEP 1: DATA FETCH
 st.header("Step 1: Select and Fetch Stock Data")
@@ -64,16 +164,14 @@ with col4:
 if fetch_btn and stock_symbol:
     try:
         with st.spinner(f"Fetching {stock_symbol}..."):
-            stock_data = yf.download(stock_symbol, period=period, progress=False)
-            if stock_data.empty:
-                st.error(f"No data for {stock_symbol}")
+            stock_data, source = fetch_stock_data(stock_symbol, period)
+            if stock_data is None or stock_data.empty:
+                st.error(f"No data for {stock_symbol}. Data providers may be blocked or the symbol is invalid.")
                 st.stop()
-            # Flatten multi-level columns if present
-            if isinstance(stock_data.columns, pd.MultiIndex):
-                stock_data.columns = stock_data.columns.get_level_values(0)
             st.session_state.stock_data = stock_data
             st.session_state.stock_symbol = stock_symbol
-            st.success(f"Data loaded for {stock_symbol}")
+            st.session_state.data_source = source
+            st.success(f"Data loaded for {stock_symbol} ({source})")
     except Exception as e:
         st.error(f"Error: {str(e)}")
         st.stop()
@@ -82,6 +180,8 @@ if fetch_btn and stock_symbol:
 if st.session_state.stock_data is not None:
     stock_data = st.session_state.stock_data.copy()
     stock_symbol = st.session_state.stock_symbol
+    if st.session_state.data_source:
+        st.caption(f"Active data source: {st.session_state.data_source}")
     
     # Flatten columns again if needed
     if isinstance(stock_data.columns, pd.MultiIndex):
@@ -274,10 +374,8 @@ if st.session_state.stock_data is not None:
             comparison_data = {}
             for symbol in compare_symbols:
                 try:
-                    data = yf.download(symbol, period=comparison_period, progress=False)
-                    if not data.empty:
-                        if isinstance(data.columns, pd.MultiIndex):
-                            data.columns = data.columns.get_level_values(0)
+                    data, _ = fetch_stock_data(symbol, comparison_period)
+                    if data is not None and not data.empty:
                         ret = (float(data['Close'].iloc[-1]) / float(data['Close'].iloc[0]) - 1) * 100
                         comparison_data[symbol] = ret
                 except:
